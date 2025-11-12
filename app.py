@@ -30,6 +30,90 @@ st.markdown("""
 # ЗАГРУЗКА ДАННЫХ
 # ============================================================================
 
+# Определение необходимых колонок
+REQUIRED_FACT_COLUMNS = ['Magazin', 'Datasales', 'Segment', 'Price', 'Qty', 'Sum']
+REQUIRED_PLAN_COLUMNS = ['Magazin', 'Segment', 'Month', 'Revenue_Plan', 'Units_Plan']
+
+
+def validate_columns(df, required_columns, data_type):
+    """Проверка наличия всех необходимых колонок в DataFrame"""
+    if df is None or df.empty:
+        st.error(f"❌ {data_type}: данные пустые")
+        return False
+
+    missing_columns = [col for col in required_columns if col not in df.columns]
+
+    if missing_columns:
+        st.error(f"❌ {data_type}: отсутствуют обязательные колонки: {', '.join(missing_columns)}")
+        st.info(f"📋 Найденные колонки: {', '.join(df.columns.tolist())}")
+        st.info(f"📋 Ожидаемые колонки: {', '.join(required_columns)}")
+        return False
+
+    # Дополнительная валидация для числовых полей
+    if data_type == "Факт":
+        numeric_columns = ['Price', 'Qty', 'Sum']
+        for col in numeric_columns:
+            if col in df.columns:
+                # Пробуем конвертировать в числовой тип
+                try:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                    null_count = df[col].isna().sum()
+                    if null_count > 0:
+                        st.warning(f"⚠️ {data_type}: колонка '{col}' содержит {null_count} нечисловых значений, они будут заменены на 0")
+                        df[col] = df[col].fillna(0)
+
+                    # Проверка на отрицательные значения
+                    negative_count = (df[col] < 0).sum()
+                    if negative_count > 0:
+                        st.warning(f"⚠️ {data_type}: колонка '{col}' содержит {negative_count} отрицательных значений, они будут заменены на 0")
+                        df[col] = df[col].clip(lower=0)
+                except Exception as e:
+                    st.error(f"❌ {data_type}: ошибка преобразования колонки '{col}' в числовой формат: {str(e)}")
+                    return False
+
+        # Проверка математической консистентности: Sum должно равняться Price * Qty
+        if all(col in df.columns for col in ['Price', 'Qty', 'Sum']):
+            df['Expected_Sum'] = df['Price'] * df['Qty']
+            # Допускаем погрешность 1% из-за округлений
+            tolerance = 0.01
+            df['Sum_Diff'] = abs(df['Sum'] - df['Expected_Sum'])
+            # Безопасное деление с защитой от деления на ноль
+            df['Sum_Diff_Pct'] = np.where(
+                df['Expected_Sum'] != 0,
+                df['Sum_Diff'] / df['Expected_Sum'],
+                0
+            )
+            inconsistent_rows = (df['Sum_Diff_Pct'] > tolerance).sum()
+
+            if inconsistent_rows > 0:
+                st.warning(f"⚠️ {data_type}: обнаружено {inconsistent_rows} записей где Sum ≠ Price × Qty (с погрешностью > {tolerance*100}%)")
+                st.info("💡 Совет: проверьте правильность расчета суммы в исходных данных")
+
+            # Удаляем вспомогательные колонки
+            df.drop(['Expected_Sum', 'Sum_Diff', 'Sum_Diff_Pct'], axis=1, inplace=True)
+
+    if data_type == "План":
+        numeric_columns = ['Revenue_Plan', 'Units_Plan']
+        for col in numeric_columns:
+            if col in df.columns:
+                try:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                    null_count = df[col].isna().sum()
+                    if null_count > 0:
+                        st.warning(f"⚠️ {data_type}: колонка '{col}' содержит {null_count} нечисловых значений, они будут заменены на 0")
+                        df[col] = df[col].fillna(0)
+
+                    # Проверка на отрицательные значения
+                    negative_count = (df[col] < 0).sum()
+                    if negative_count > 0:
+                        st.warning(f"⚠️ {data_type}: колонка '{col}' содержит {negative_count} отрицательных значений, они будут заменены на 0")
+                        df[col] = df[col].clip(lower=0)
+                except Exception as e:
+                    st.error(f"❌ {data_type}: ошибка преобразования колонки '{col}' в числовой формат: {str(e)}")
+                    return False
+
+    return True
+
 
 def parse_sheets_url(url):
     """Извлечение spreadsheet_id и gid из URL"""
@@ -76,11 +160,19 @@ def load_data_from_sheets(plan_url, fact_url):
         df_plan = pd.read_csv(plan_export)
         df_fact = pd.read_csv(fact_export)
 
+        # Валидация колонок
+        if not validate_columns(df_fact, REQUIRED_FACT_COLUMNS, "Факт"):
+            return None, None
+
+        if not validate_columns(df_plan, REQUIRED_PLAN_COLUMNS, "План"):
+            return None, None
+
+        st.success("✅ Данные успешно загружены и проверены")
         return df_fact, df_plan
 
     except Exception as e:
-        st.error(f"Ошибка: {str(e)}")
-        st.info("Проверь: таблица публична, ссылки правильные")
+        st.error(f"❌ Ошибка загрузки: {str(e)}")
+        st.info("💡 Проверь: таблица публична, ссылки правильные, колонки соответствуют требуемым")
         return None, None
 
 
@@ -156,11 +248,29 @@ def generate_demo_data():
 def prepare_data(df_fact, df_plan):
     """Подготовка данных для анализа"""
 
-    # Преобразование дат
+    # Валидация входных данных
+    if df_fact is None or df_fact.empty:
+        st.error("❌ Данные факта пустые или отсутствуют")
+        return None, None
+
+    if df_plan is None or df_plan.empty:
+        st.error("❌ Данные плана пустые или отсутствуют")
+        return None, None
+
+    # Преобразование дат с поддержкой множественных форматов
+    # Сначала пробуем автоматическое определение формата
     df_fact['Datasales'] = pd.to_datetime(
         df_fact['Datasales'],
-        format='%d.%m.%Y',
-        errors='coerce')
+        format='mixed',
+        errors='coerce'
+    )
+
+    # Проверка на некорректные даты
+    invalid_dates = df_fact['Datasales'].isna().sum()
+    if invalid_dates > 0:
+        st.warning(f"⚠️ Обнаружено {invalid_dates} записей с некорректными датами, они будут пропущены")
+        df_fact = df_fact.dropna(subset=['Datasales'])
+
     df_fact['Month'] = df_fact['Datasales'].dt.to_period('M').astype(str)
     df_fact['Week'] = df_fact['Datasales'].dt.to_period('W').astype(str)
 
@@ -372,6 +482,15 @@ def main():
     # Подготовка данных
     df_merged, df_fact_detailed = prepare_data(df_fact, df_plan)
 
+    # Проверка результата подготовки данных
+    if df_merged is None or df_fact_detailed is None:
+        st.error("❌ Ошибка подготовки данных. Проверьте структуру загруженных файлов.")
+        return
+
+    if df_merged.empty:
+        st.warning("⚠️ После обработки данные оказались пустыми. Проверьте соответствие периодов в Плане и Факте.")
+        return
+
     # Фильтр по месяцам
     available_months = sorted(df_merged['Month'].unique())
     selected_months = st.sidebar.multiselect(
@@ -393,6 +512,11 @@ def main():
         (df_merged['Month'].isin(selected_months)) &
         (df_merged['Segment'].isin(selected_segments))
     ]
+
+    # Проверка фильтрованных данных
+    if df_filtered.empty:
+        st.warning("⚠️ По выбранным фильтрам нет данных. Измените параметры фильтрации.")
+        return
 
     # Alerts
     st.sidebar.markdown("---")
