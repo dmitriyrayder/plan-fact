@@ -31,23 +31,55 @@ st.markdown("""
 # ЗАГРУЗКА ДАННЫХ
 # ============================================================================
 
+def parse_sheets_url(url):
+    """Извлечение spreadsheet_id и gid из URL"""
+    try:
+        # Извлекаем spreadsheet_id
+        if '/d/' in url:
+            spreadsheet_id = url.split('/d/')[1].split('/')[0]
+        else:
+            spreadsheet_id = url
+        
+        # Извлекаем gid
+        gid = None
+        if '#gid=' in url:
+            gid = url.split('#gid=')[1].split('&')[0]
+        elif 'gid=' in url:
+            gid = url.split('gid=')[1].split('&')[0]
+        
+        return spreadsheet_id, gid
+    except:
+        return None, None
+
 @st.cache_data(ttl=600)
-def load_data_from_sheets(spreadsheet_id, plan_gid, fact_gid):
+def load_data_from_sheets(plan_url, fact_url):
     """Загрузка из Google Sheets (публичный доступ)"""
     try:
-        base_url = f'https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export'
+        # Парсим ссылки
+        plan_id, plan_gid = parse_sheets_url(plan_url)
+        fact_id, fact_gid = parse_sheets_url(fact_url)
         
-        plan_url = f'{base_url}?format=csv&gid={plan_gid}'
-        df_plan = pd.read_csv(plan_url)
+        if not plan_id or not plan_gid:
+            st.error("❌ Некорректная ссылка на План")
+            return None, None
         
-        fact_url = f'{base_url}?format=csv&gid={fact_gid}'
-        df_fact = pd.read_csv(fact_url)
+        if not fact_id or not fact_gid:
+            st.error("❌ Некорректная ссылка на Факт")
+            return None, None
+        
+        # Формируем URLs для экспорта
+        plan_export = f'https://docs.google.com/spreadsheets/d/{plan_id}/export?format=csv&gid={plan_gid}'
+        fact_export = f'https://docs.google.com/spreadsheets/d/{fact_id}/export?format=csv&gid={fact_gid}'
+        
+        # Загрузка
+        df_plan = pd.read_csv(plan_export)
+        df_fact = pd.read_csv(fact_export)
         
         return df_fact, df_plan
     
     except Exception as e:
         st.error(f"Ошибка: {str(e)}")
-        st.info("Проверь: таблица публична, GID правильные")
+        st.info("Проверь: таблица публична, ссылки правильные")
         return None, None
 
 @st.cache_data
@@ -178,22 +210,29 @@ def main():
     else:
         st.sidebar.subheader("Google Sheets")
         
-        spreadsheet_id = st.sidebar.text_input(
-            "Spreadsheet ID",
-            value="1lJLON5N_EKQ5ICv0Pprp5DamP1tNAhBIph4uEoWC04Q"
+        st.sidebar.info("📌 Как получить ссылку:\n1. Открой нужный лист в Google Sheets\n2. Скопируй URL из адресной строки")
+        
+        # Ссылка на лист План
+        plan_url = st.sidebar.text_input(
+            "🔗 Ссылка на лист План",
+            value="https://docs.google.com/spreadsheets/d/1lJLON5N_EKQ5ICv0Pprp5DamP1tNAhBIph4uEoWC04Q/edit#gid=103045414",
+            placeholder="https://docs.google.com/.../edit#gid=...",
+            help="Открой лист 'Plan' в Google Sheets и скопируй URL из браузера"
         )
         
-        col1, col2 = st.sidebar.columns(2)
-        with col1:
-            plan_gid = st.text_input("Plan GID", value="103045414")
-        with col2:
-            fact_gid = st.text_input("Fact GID", value="1144131206")
+        # Ссылка на лист Факт
+        fact_url = st.sidebar.text_input(
+            "🔗 Ссылка на лист Факт",
+            value="https://docs.google.com/spreadsheets/d/1lJLON5N_EKQ5ICv0Pprp5DamP1tNAhBIph4uEoWC04Q/edit#gid=1144131206",
+            placeholder="https://docs.google.com/.../edit#gid=...",
+            help="Открой лист 'Fact' в Google Sheets и скопируй URL из браузера"
+        )
         
-        if st.sidebar.button("🔄 Загрузить данные"):
-            with st.spinner("Загрузка..."):
-                df_fact, df_plan = load_data_from_sheets(spreadsheet_id, plan_gid, fact_gid)
+        if st.sidebar.button("🔄 Загрузить данные", use_container_width=True):
+            with st.spinner("Загрузка из Google Sheets..."):
+                df_fact, df_plan = load_data_from_sheets(plan_url, fact_url)
         else:
-            st.info("👈 Нажми 'Загрузить данные' в боковой панели")
+            st.info("👈 Вставь ссылки на листы Plan и Fact, затем нажми 'Загрузить данные'")
             return
     
     if df_fact is None or df_plan is None:
