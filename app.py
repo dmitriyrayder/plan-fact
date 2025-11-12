@@ -151,19 +151,19 @@ def generate_demo_data():
 # Обработка данных
 def prepare_data(df_fact, df_plan):
     """Подготовка данных для анализа"""
-    
+
     # Преобразование дат
     df_fact['Datasales'] = pd.to_datetime(df_fact['Datasales'])
     df_fact['Month'] = df_fact['Datasales'].dt.to_period('M').astype(str)
     df_fact['Week'] = df_fact['Datasales'].dt.to_period('W').astype(str)
-    
+
     # Агрегация факта по магазин × сегмент × месяц
     fact_agg = df_fact.groupby(['Magazin', 'Segment', 'Month']).agg({
         'Sum': 'sum',
         'Qty': 'sum'
     }).reset_index()
     fact_agg.columns = ['Magazin', 'Segment', 'Month', 'Revenue_Fact', 'Units_Fact']
-    
+
     # Объединение план и факт
     df_merged = pd.merge(
         df_plan,
