@@ -153,7 +153,7 @@ def prepare_data(df_fact, df_plan):
     """Подготовка данных для анализа"""
 
     # Преобразование дат
-    df_fact['Datasales'] = pd.to_datetime(df_fact['Datasales'])
+    df_fact['Datasales'] = pd.to_datetime(df_fact['Datasales'], format='%d.%m.%Y', errors='coerce')
     df_fact['Month'] = df_fact['Datasales'].dt.to_period('M').astype(str)
     df_fact['Week'] = df_fact['Datasales'].dt.to_period('W').astype(str)
 
