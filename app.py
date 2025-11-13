@@ -3,6 +3,8 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
+from datetime import datetime, timedelta
+from dateutil import parser
 
 # ============================================================================
 # КОНФИГУРАЦИЯ
@@ -176,6 +178,138 @@ def load_data_from_sheets(plan_url, fact_url):
         return None, None
 
 
+def parse_dates_flexible(date_series):
+    """
+    Гибкий парсинг дат с поддержкой множественных форматов
+    Поддерживаемые форматы:
+    - YYYY-MM-DD (ISO 8601)
+    - DD.MM.YYYY
+    - DD/MM/YYYY
+    - MM/DD/YYYY
+    - YYYY/MM/DD
+    - DD-MM-YYYY
+    - Excel serial dates (числа)
+    """
+    parsed_dates = []
+    errors = []
+
+    for idx, date_val in enumerate(date_series):
+        if pd.isna(date_val):
+            parsed_dates.append(pd.NaT)
+            continue
+
+        try:
+            # Если это уже datetime
+            if isinstance(date_val, (pd.Timestamp, datetime)):
+                parsed_dates.append(pd.Timestamp(date_val))
+                continue
+
+            # Если это число (Excel serial date)
+            if isinstance(date_val, (int, float)):
+                # Excel начинает считать с 1900-01-01
+                try:
+                    parsed_date = pd.Timestamp('1899-12-30') + pd.Timedelta(days=date_val)
+                    parsed_dates.append(parsed_date)
+                    continue
+                except:
+                    pass
+
+            # Пробуем стандартные форматы
+            date_str = str(date_val).strip()
+
+            # Список форматов для проверки
+            date_formats = [
+                '%Y-%m-%d',      # 2025-01-15
+                '%d.%m.%Y',      # 15.01.2025
+                '%d/%m/%Y',      # 15/01/2025
+                '%m/%d/%Y',      # 01/15/2025
+                '%Y/%m/%d',      # 2025/01/15
+                '%d-%m-%Y',      # 15-01-2025
+                '%Y%m%d',        # 20250115
+                '%d.%m.%y',      # 15.01.25
+                '%d/%m/%y',      # 15/01/25
+            ]
+
+            parsed = None
+            for fmt in date_formats:
+                try:
+                    parsed = datetime.strptime(date_str, fmt)
+                    break
+                except:
+                    continue
+
+            # Если не получилось стандартными форматами, пробуем dateutil
+            if parsed is None:
+                try:
+                    parsed = parser.parse(date_str, dayfirst=True)
+                except:
+                    errors.append((idx, date_val))
+                    parsed_dates.append(pd.NaT)
+                    continue
+
+            parsed_dates.append(pd.Timestamp(parsed))
+
+        except Exception as e:
+            errors.append((idx, date_val))
+            parsed_dates.append(pd.NaT)
+
+    return pd.Series(parsed_dates), errors
+
+
+def load_data_from_excel(fact_file, plan_file):
+    """Загрузка данных из Excel файлов"""
+    try:
+        # Загрузка файла Факт
+        if fact_file is not None:
+            # Определяем тип файла
+            file_ext = fact_file.name.split('.')[-1].lower()
+
+            if file_ext in ['xlsx', 'xls']:
+                df_fact = pd.read_excel(fact_file, engine='openpyxl' if file_ext == 'xlsx' else None)
+            elif file_ext == 'csv':
+                # Пробуем определить разделитель
+                df_fact = pd.read_csv(fact_file, encoding='utf-8-sig', sep=None, engine='python')
+            else:
+                st.error(f"❌ Неподдерживаемый формат файла Факт: {file_ext}")
+                return None, None
+
+            # Валидация колонок
+            if not validate_columns(df_fact, REQUIRED_FACT_COLUMNS, "Факт"):
+                return None, None
+
+        else:
+            st.error("❌ Файл Факт не загружен")
+            return None, None
+
+        # Загрузка файла План
+        if plan_file is not None:
+            file_ext = plan_file.name.split('.')[-1].lower()
+
+            if file_ext in ['xlsx', 'xls']:
+                df_plan = pd.read_excel(plan_file, engine='openpyxl' if file_ext == 'xlsx' else None)
+            elif file_ext == 'csv':
+                df_plan = pd.read_csv(plan_file, encoding='utf-8-sig', sep=None, engine='python')
+            else:
+                st.error(f"❌ Неподдерживаемый формат файла План: {file_ext}")
+                return None, None
+
+            # Валидация колонок
+            if not validate_columns(df_plan, REQUIRED_PLAN_COLUMNS, "План"):
+                return None, None
+
+        else:
+            st.error("❌ Файл План не загружен")
+            return None, None
+
+        st.success("✅ Файлы успешно загружены и проверены")
+        return df_fact, df_plan
+
+    except Exception as e:
+        st.error(f"❌ Ошибка загрузки файлов: {str(e)}")
+        st.info("💡 Проверьте: формат файлов корректный, колонки соответствуют требуемым")
+        return None, None
+
+
 @st.cache_data
 def generate_demo_data():
     """Генерация демо данных"""
@@ -258,17 +392,17 @@ def prepare_data(df_fact, df_plan):
         return None, None
 
     # Преобразование дат с поддержкой множественных форматов
-    # Сначала пробуем автоматическое определение формата
-    df_fact['Datasales'] = pd.to_datetime(
-        df_fact['Datasales'],
-        format='mixed',
-        errors='coerce'
-    )
+    # Используем гибкую функцию парсинга дат
+    df_fact['Datasales'], date_errors = parse_dates_flexible(df_fact['Datasales'])
 
     # Проверка на некорректные даты
+    if date_errors:
+        st.warning(f"⚠️ Обнаружено {len(date_errors)} записей с некорректными датами, они будут пропущены")
+        if len(date_errors) <= 10:
+            st.info(f"Примеры некорректных дат: {[err[1] for err in date_errors[:5]]}")
+
     invalid_dates = df_fact['Datasales'].isna().sum()
     if invalid_dates > 0:
-        st.warning(f"⚠️ Обнаружено {invalid_dates} записей с некорректными датами, они будут пропущены")
         df_fact = df_fact.dropna(subset=['Datasales'])
 
     df_fact['Month'] = df_fact['Datasales'].dt.to_period('M').astype(str)
@@ -428,6 +562,180 @@ def format_number(num, decimals=0):
     else:
         return f"{num:,.{decimals}f}".replace(',', ' ')
 
+
+# Функции для прогнозирования и планирования
+
+def calculate_growth_rate(df_merged, df_fact_detailed):
+    """Расчет темпа роста продаж"""
+    # Анализ продаж по месяцам
+    monthly_sales = df_fact_detailed.groupby('Month').agg({
+        'Sum': 'sum',
+        'Qty': 'sum'
+    }).reset_index()
+    monthly_sales = monthly_sales.sort_values('Month')
+
+    if len(monthly_sales) < 2:
+        return 0, monthly_sales
+
+    # Средний темп роста
+    growth_rates = []
+    for i in range(1, len(monthly_sales)):
+        prev_revenue = monthly_sales.iloc[i-1]['Sum']
+        curr_revenue = monthly_sales.iloc[i]['Sum']
+        if prev_revenue > 0:
+            growth_rate = ((curr_revenue - prev_revenue) / prev_revenue) * 100
+            growth_rates.append(growth_rate)
+
+    avg_growth_rate = np.mean(growth_rates) if growth_rates else 0
+    return avg_growth_rate, monthly_sales
+
+
+def forecast_next_period(df_merged, df_fact_detailed, periods=3):
+    """Прогнозирование продаж на следующие периоды"""
+    avg_growth_rate, monthly_sales = calculate_growth_rate(df_merged, df_fact_detailed)
+
+    if monthly_sales.empty:
+        return None
+
+    last_month_sales = monthly_sales.iloc[-1]['Sum']
+    last_month_units = monthly_sales.iloc[-1]['Qty']
+    last_month_date = pd.Period(monthly_sales.iloc[-1]['Month'])
+
+    forecasts = []
+    for i in range(1, periods + 1):
+        forecast_month = (last_month_date + i).strftime('%Y-%m')
+        # Прогноз с учетом роста
+        forecast_revenue = last_month_sales * ((1 + avg_growth_rate / 100) ** i)
+        forecast_units = last_month_units * ((1 + avg_growth_rate / 100) ** i)
+
+        forecasts.append({
+            'Month': forecast_month,
+            'Forecast_Revenue': forecast_revenue,
+            'Forecast_Units': int(forecast_units),
+            'Growth_Rate': avg_growth_rate
+        })
+
+    return pd.DataFrame(forecasts)
+
+
+def generate_plan_recommendations(df_merged, df_fact_detailed, financial_metrics, abc_analysis):
+    """Генерация рекомендаций для планирования"""
+    recommendations = []
+
+    # 1. Анализ выполнения плана
+    if financial_metrics['plan_achievement'] < 90:
+        recommendations.append({
+            'priority': 'Высокий',
+            'category': 'Выполнение плана',
+            'issue': f"Общее выполнение плана составляет {financial_metrics['plan_achievement']:.1f}%",
+            'recommendation': 'Снизить плановые показатели на 10-15% или усилить маркетинговую поддержку',
+            'impact': 'Высокий'
+        })
+    elif financial_metrics['plan_achievement'] > 110:
+        recommendations.append({
+            'priority': 'Средний',
+            'category': 'Выполнение плана',
+            'issue': f"План перевыполнен на {financial_metrics['plan_achievement'] - 100:.1f}%",
+            'recommendation': 'Пересмотреть плановые показатели в сторону увеличения на 5-10%',
+            'impact': 'Средний'
+        })
+
+    # 2. Анализ по сегментам
+    segment_performance = df_merged.groupby('Segment').agg({
+        'Revenue_Fact': 'sum',
+        'Revenue_Plan': 'sum'
+    }).reset_index()
+    segment_performance['Achievement'] = safe_divide(
+        segment_performance['Revenue_Fact'],
+        segment_performance['Revenue_Plan']
+    ) * 100
+
+    underperforming_segments = segment_performance[segment_performance['Achievement'] < 85]
+    for _, seg in underperforming_segments.iterrows():
+        recommendations.append({
+            'priority': 'Высокий',
+            'category': 'Сегментация',
+            'issue': f"Сегмент '{seg['Segment']}' показывает низкое выполнение: {seg['Achievement']:.1f}%",
+            'recommendation': f"Провести анализ ассортимента в сегменте {seg['Segment']}, рассмотреть промо-акции",
+            'impact': 'Высокий'
+        })
+
+    # 3. Анализ ABC категорий
+    category_c = abc_analysis[abc_analysis['ABC_Category'] == 'C']
+    if len(category_c) > 0:
+        total_c_revenue = category_c['Revenue_Fact'].sum()
+        recommendations.append({
+            'priority': 'Средний',
+            'category': 'ABC анализ',
+            'issue': f"Категория C содержит {len(category_c)} магазинов с низкой эффективностью",
+            'recommendation': f"Рассмотреть оптимизацию работы или закрытие неэффективных точек",
+            'impact': 'Средний'
+        })
+
+    # 4. Анализ среднего чека
+    if financial_metrics['avg_check_diff_pct'] < -10:
+        recommendations.append({
+            'priority': 'Высокий',
+            'category': 'Средний чек',
+            'issue': f"Средний чек снизился на {abs(financial_metrics['avg_check_diff_pct']):.1f}%",
+            'recommendation': 'Внедрить up-selling и cross-selling стратегии, обучить персонал',
+            'impact': 'Высокий'
+        })
+
+    # 5. Успешность магазинов
+    if financial_metrics['store_success_rate'] < 50:
+        recommendations.append({
+            'priority': 'Критический',
+            'category': 'Эффективность сети',
+            'issue': f"Только {financial_metrics['store_success_rate']:.0f}% магазинов выполняют план",
+            'recommendation': 'Провести аудит неэффективных точек, пересмотреть систему мотивации',
+            'impact': 'Критический'
+        })
+
+    return pd.DataFrame(recommendations) if recommendations else None
+
+
+def create_smart_plan(df_merged, df_fact_detailed, forecast_periods=3, adjustment_factor=1.0):
+    """
+    Создание умного плана на основе исторических данных
+    adjustment_factor: коэффициент корректировки (1.0 = без изменений, 1.1 = +10%, 0.9 = -10%)
+    """
+    # Получаем прогноз
+    forecast_df = forecast_next_period(df_merged, df_fact_detailed, forecast_periods)
+
+    if forecast_df is None or forecast_df.empty:
+        return None
+
+    # Анализ по магазинам и сегментам
+    store_segment_avg = df_merged.groupby(['Magazin', 'Segment']).agg({
+        'Revenue_Fact': 'mean',
+        'Units_Fact': 'mean'
+    }).reset_index()
+
+    # Генерация плана для каждого магазина/сегмента
+    smart_plan = []
+    for _, row in store_segment_avg.iterrows():
+        for _, forecast in forecast_df.iterrows():
+            # Доля магазина/сегмента от общих продаж
+            total_revenue = store_segment_avg['Revenue_Fact'].sum()
+            store_segment_share = safe_divide(row['Revenue_Fact'], total_revenue, 0)
+
+            # Прогнозный план с учетом доли и коэффициента корректировки
+            planned_revenue = forecast['Forecast_Revenue'] * store_segment_share * adjustment_factor
+            planned_units = int(forecast['Forecast_Units'] * store_segment_share * adjustment_factor)
+
+            smart_plan.append({
+                'Magazin': row['Magazin'],
+                'Segment': row['Segment'],
+                'Month': forecast['Month'],
+                'Revenue_Plan': round(planned_revenue, 2),
+                'Units_Plan': planned_units,
+                'Based_on': 'Исторические данные + прогноз',
+                'Growth_Rate': forecast['Growth_Rate']
+            })
+
+    return pd.DataFrame(smart_plan)
+
 # Главная функция
 
 
@@ -440,11 +748,56 @@ def main():
     st.sidebar.header("⚙️ Фильтры")
 
     # Загрузка данных
-    use_demo = st.sidebar.checkbox("Использовать демо-данные", value=True)
+    data_source = st.sidebar.radio(
+        "📂 Источник данных",
+        options=["Демо-данные", "Excel/CSV файлы", "Google Sheets"],
+        index=0
+    )
 
-    if use_demo:
+    if data_source == "Демо-данные":
         df_fact, df_plan = generate_demo_data()
-    else:
+
+    elif data_source == "Excel/CSV файлы":
+        st.sidebar.subheader("📊 Загрузка файлов")
+
+        st.sidebar.info(
+            "📋 **Требуемые колонки для файла ФАКТ:**\n"
+            "- Magazin (название магазина)\n"
+            "- Datasales (дата продажи)\n"
+            "- Segment (сегмент товара)\n"
+            "- Price (цена)\n"
+            "- Qty (количество)\n"
+            "- Sum (сумма)\n\n"
+            "📋 **Требуемые колонки для файла ПЛАН:**\n"
+            "- Magazin (название магазина)\n"
+            "- Segment (сегмент товара)\n"
+            "- Month (месяц в формате YYYY-MM)\n"
+            "- Revenue_Plan (план выручки)\n"
+            "- Units_Plan (план штук)"
+        )
+
+        st.sidebar.markdown("---")
+
+        fact_file = st.sidebar.file_uploader(
+            "📁 Загрузить файл ФАКТ",
+            type=['xlsx', 'xls', 'csv'],
+            help="Форматы: Excel (.xlsx, .xls) или CSV"
+        )
+
+        plan_file = st.sidebar.file_uploader(
+            "📁 Загрузить файл ПЛАН",
+            type=['xlsx', 'xls', 'csv'],
+            help="Форматы: Excel (.xlsx, .xls) или CSV"
+        )
+
+        if fact_file and plan_file:
+            with st.spinner("Загрузка файлов..."):
+                df_fact, df_plan = load_data_from_excel(fact_file, plan_file)
+        else:
+            st.info("👈 Загрузите оба файла (ФАКТ и ПЛАН) для начала анализа")
+            return
+
+    else:  # Google Sheets
         st.sidebar.subheader("Google Sheets")
 
         st.sidebar.info(
@@ -541,13 +894,15 @@ def main():
     abc_analysis = perform_abc_analysis(df_filtered)
 
     # Основной контент - Tabs
-    tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "📋 Executive Summary",
         "📊 Сводка",
         "🏪 По магазинам",
         "📦 По сегментам",
         "📈 Динамика",
-        "🎯 ABC Анализ"
+        "🎯 ABC Анализ",
+        "📊 Общая сводка анализа",
+        "🎯 Планирование"
     ])
 
     # TAB 0: Executive Summary
@@ -1329,6 +1684,517 @@ def main():
                 mime="text/csv",
                 use_container_width=True
             )
+
+    # TAB 6: Общая сводка анализа
+    with tab6:
+        st.header("📊 Общая сводка анализа План/Факт")
+        st.markdown("---")
+
+        st.info("Этот раздел предоставляет комплексный анализ выполнения плана продаж с детализацией по ключевым метрикам")
+
+        # Период анализа
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.subheader(f"📅 Период анализа: {min(selected_months)} - {max(selected_months)}")
+        with col2:
+            st.metric(
+                "Количество месяцев",
+                len(selected_months),
+                help="Количество анализируемых месяцев"
+            )
+
+        st.markdown("---")
+
+        # Сводная таблица по всем метрикам
+        st.markdown("### 📈 Сводная таблица показателей")
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.markdown("#### Выручка")
+            revenue_summary = pd.DataFrame({
+                'Показатель': ['План', 'Факт', 'Отклонение', 'Отклонение %'],
+                'Значение': [
+                    f"{format_number(financial_metrics['total_revenue_plan'])} ₴",
+                    f"{format_number(financial_metrics['total_revenue_fact'])} ₴",
+                    f"{format_number(financial_metrics['revenue_variance'])} ₴",
+                    f"{financial_metrics['revenue_variance_pct']:+.2f}%"
+                ]
+            })
+            st.dataframe(revenue_summary, use_container_width=True, hide_index=True)
+
+        with col2:
+            st.markdown("#### Количество продаж")
+            units_summary = pd.DataFrame({
+                'Показатель': ['План', 'Факт', 'Отклонение', 'Отклонение %'],
+                'Значение': [
+                    f"{format_number(financial_metrics['total_units_plan'])} шт",
+                    f"{format_number(financial_metrics['total_units_fact'])} шт",
+                    f"{format_number(financial_metrics['units_variance'])} шт",
+                    f"{financial_metrics['units_variance_pct']:+.2f}%"
+                ]
+            })
+            st.dataframe(units_summary, use_container_width=True, hide_index=True)
+
+        with col3:
+            st.markdown("#### Средний чек")
+            avg_check_summary = pd.DataFrame({
+                'Показатель': ['План', 'Факт', 'Отклонение', 'Отклонение %'],
+                'Значение': [
+                    f"{format_number(financial_metrics['avg_check_plan'])} ₴",
+                    f"{format_number(financial_metrics['avg_check_fact'])} ₴",
+                    f"{format_number(financial_metrics['avg_check_diff'])} ₴",
+                    f"{financial_metrics['avg_check_diff_pct']:+.2f}%"
+                ]
+            })
+            st.dataframe(avg_check_summary, use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+
+        # Детализация по сегментам
+        st.markdown("### 📦 Детальный анализ по сегментам")
+
+        segment_detailed = df_filtered.groupby('Segment').agg({
+            'Revenue_Plan': 'sum',
+            'Revenue_Fact': 'sum',
+            'Units_Plan': 'sum',
+            'Units_Fact': 'sum'
+        }).reset_index()
+
+        segment_detailed['Revenue_Diff'] = segment_detailed['Revenue_Fact'] - segment_detailed['Revenue_Plan']
+        segment_detailed['Revenue_Diff_Pct'] = safe_divide(
+            segment_detailed['Revenue_Diff'],
+            segment_detailed['Revenue_Plan']
+        ) * 100
+
+        segment_detailed['Units_Diff'] = segment_detailed['Units_Fact'] - segment_detailed['Units_Plan']
+        segment_detailed['Units_Diff_Pct'] = safe_divide(
+            segment_detailed['Units_Diff'],
+            segment_detailed['Units_Plan']
+        ) * 100
+
+        segment_detailed['Avg_Check_Fact'] = safe_divide(
+            segment_detailed['Revenue_Fact'],
+            segment_detailed['Units_Fact']
+        )
+
+        # Форматирование
+        segment_display = segment_detailed.copy()
+        segment_display['Revenue_Plan'] = segment_display['Revenue_Plan'].apply(lambda x: f"{format_number(x)} ₴")
+        segment_display['Revenue_Fact'] = segment_display['Revenue_Fact'].apply(lambda x: f"{format_number(x)} ₴")
+        segment_display['Revenue_Diff'] = segment_display['Revenue_Diff'].apply(lambda x: f"{format_number(x)} ₴")
+        segment_display['Revenue_Diff_Pct'] = segment_display['Revenue_Diff_Pct'].apply(lambda x: f"{x:+.1f}%")
+        segment_display['Units_Plan'] = segment_display['Units_Plan'].apply(lambda x: f"{format_number(x)} шт")
+        segment_display['Units_Fact'] = segment_display['Units_Fact'].apply(lambda x: f"{format_number(x)} шт")
+        segment_display['Units_Diff'] = segment_display['Units_Diff'].apply(lambda x: f"{format_number(x)} шт")
+        segment_display['Units_Diff_Pct'] = segment_display['Units_Diff_Pct'].apply(lambda x: f"{x:+.1f}%")
+        segment_display['Avg_Check_Fact'] = segment_display['Avg_Check_Fact'].apply(lambda x: f"{format_number(x)} ₴")
+
+        st.dataframe(segment_display, use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+
+        # Детализация по магазинам - ТОП и ХУДШИЕ
+        st.markdown("### 🏪 Лучшие и худшие магазины по выполнению плана")
+
+        col1, col2 = st.columns(2)
+
+        store_performance = df_filtered.groupby('Magazin').agg({
+            'Revenue_Plan': 'sum',
+            'Revenue_Fact': 'sum'
+        }).reset_index()
+
+        store_performance['Achievement_%'] = safe_divide(
+            store_performance['Revenue_Fact'],
+            store_performance['Revenue_Plan']
+        ) * 100
+
+        store_performance_sorted = store_performance.sort_values('Achievement_%', ascending=False)
+
+        with col1:
+            st.markdown("#### 🟢 ТОП-10 магазинов")
+            top10 = store_performance_sorted.head(10).copy()
+            top10['Revenue_Plan'] = top10['Revenue_Plan'].apply(lambda x: f"{format_number(x)} ₴")
+            top10['Revenue_Fact'] = top10['Revenue_Fact'].apply(lambda x: f"{format_number(x)} ₴")
+            top10['Achievement_%'] = top10['Achievement_%'].apply(lambda x: f"{x:.1f}%")
+            st.dataframe(top10, use_container_width=True, hide_index=True, height=400)
+
+        with col2:
+            st.markdown("#### 🔴 ХУДШИЕ-10 магазинов")
+            bottom10 = store_performance_sorted.tail(10).copy()
+            bottom10['Revenue_Plan'] = bottom10['Revenue_Plan'].apply(lambda x: f"{format_number(x)} ₴")
+            bottom10['Revenue_Fact'] = bottom10['Revenue_Fact'].apply(lambda x: f"{format_number(x)} ₴")
+            bottom10['Achievement_%'] = bottom10['Achievement_%'].apply(lambda x: f"{x:.1f}%")
+            st.dataframe(bottom10, use_container_width=True, hide_index=True, height=400)
+
+        st.markdown("---")
+
+        # График распределения выполнения плана
+        st.markdown("### 📊 Распределение магазинов по выполнению плана")
+
+        fig_distribution = px.histogram(
+            store_performance,
+            x='Achievement_%',
+            nbins=20,
+            title='Количество магазинов по уровню выполнения плана',
+            labels={'Achievement_%': 'Выполнение плана (%)', 'count': 'Количество магазинов'},
+            color_discrete_sequence=['#4dabf7']
+        )
+
+        # Добавляем линию на уровне 100%
+        fig_distribution.add_vline(
+            x=100,
+            line_dash="dash",
+            line_color="red",
+            annotation_text="100% плана",
+            annotation_position="top"
+        )
+
+        fig_distribution.update_layout(height=400)
+        st.plotly_chart(fig_distribution, use_container_width=True)
+
+        # Экспорт общей сводки
+        st.markdown("---")
+        st.markdown("### 💾 Экспорт данных")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            # Экспорт сводки по сегментам
+            csv_segment = segment_display.to_csv(index=False, encoding='utf-8-sig')
+            st.download_button(
+                label="📥 Скачать анализ по сегментам (CSV)",
+                data=csv_segment,
+                file_name=f"segment_analysis_{min(selected_months)}_{max(selected_months)}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
+        with col2:
+            # Экспорт по магазинам
+            csv_stores = store_performance.to_csv(index=False, encoding='utf-8-sig')
+            st.download_button(
+                label="📥 Скачать анализ по магазинам (CSV)",
+                data=csv_stores,
+                file_name=f"store_analysis_{min(selected_months)}_{max(selected_months)}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
+    # TAB 7: Планирование
+    with tab7:
+        st.header("🎯 Интеллектуальное планирование продаж")
+        st.markdown("---")
+
+        st.info("Этот раздел использует исторические данные и машинное обучение для прогнозирования будущих продаж и генерации рекомендаций")
+
+        # Параметры прогнозирования
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            forecast_periods = st.slider(
+                "Количество месяцев для прогноза",
+                min_value=1,
+                max_value=12,
+                value=3,
+                help="Выберите количество месяцев для прогнозирования"
+            )
+
+        with col2:
+            adjustment_factor = st.slider(
+                "Коэффициент корректировки плана",
+                min_value=0.5,
+                max_value=1.5,
+                value=1.0,
+                step=0.05,
+                help="1.0 = без изменений, 1.1 = +10%, 0.9 = -10%"
+            )
+
+        with col3:
+            st.metric(
+                "Корректировка",
+                f"{(adjustment_factor - 1) * 100:+.0f}%",
+                help="Процент корректировки от базового прогноза"
+            )
+
+        st.markdown("---")
+
+        # Анализ тренда
+        st.markdown("### 📈 Анализ текущего тренда продаж")
+
+        avg_growth_rate, monthly_sales = calculate_growth_rate(df_filtered, df_fact_detailed)
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            growth_color = "normal" if avg_growth_rate >= 0 else "inverse"
+            st.metric(
+                "Средний темп роста",
+                f"{avg_growth_rate:+.2f}%",
+                help="Средний месячный темп роста продаж",
+                delta_color=growth_color
+            )
+
+        with col2:
+            if not monthly_sales.empty:
+                last_month_revenue = monthly_sales.iloc[-1]['Sum']
+                st.metric(
+                    "Выручка последнего месяца",
+                    f"{format_number(last_month_revenue)} ₴",
+                    help="Выручка за последний полный месяц"
+                )
+
+        with col3:
+            if len(monthly_sales) >= 2:
+                mom_growth = ((monthly_sales.iloc[-1]['Sum'] - monthly_sales.iloc[-2]['Sum']) /
+                             monthly_sales.iloc[-2]['Sum'] * 100) if monthly_sales.iloc[-2]['Sum'] > 0 else 0
+                st.metric(
+                    "Рост к предыдущему месяцу",
+                    f"{mom_growth:+.1f}%",
+                    help="Month-over-Month рост"
+                )
+
+        # График исторических продаж
+        if not monthly_sales.empty:
+            fig_trend = px.line(
+                monthly_sales,
+                x='Month',
+                y='Sum',
+                markers=True,
+                title='Тренд продаж по месяцам',
+                labels={'Sum': 'Выручка (₴)', 'Month': 'Месяц'}
+            )
+            fig_trend.update_layout(height=350)
+            st.plotly_chart(fig_trend, use_container_width=True)
+
+        st.markdown("---")
+
+        # Прогноз
+        st.markdown("### 🔮 Прогноз продаж")
+
+        if st.button("🚀 Сгенерировать прогноз", type="primary", use_container_width=False):
+            with st.spinner("Генерация прогноза..."):
+                forecast_df = forecast_next_period(df_filtered, df_fact_detailed, forecast_periods)
+
+                if forecast_df is not None and not forecast_df.empty:
+                    st.success("✅ Прогноз успешно сгенерирован")
+
+                    # Отображение прогноза
+                    col1, col2 = st.columns([2, 1])
+
+                    with col1:
+                        st.markdown("#### 📊 Прогнозные показатели")
+
+                        forecast_display = forecast_df.copy()
+                        forecast_display['Forecast_Revenue'] = forecast_display['Forecast_Revenue'].apply(
+                            lambda x: f"{format_number(x)} ₴")
+                        forecast_display['Forecast_Units'] = forecast_display['Forecast_Units'].apply(
+                            lambda x: f"{format_number(x)} шт")
+                        forecast_display['Growth_Rate'] = forecast_display['Growth_Rate'].apply(
+                            lambda x: f"{x:.2f}%")
+
+                        forecast_display.columns = ['Месяц', 'Прогноз выручки', 'Прогноз штук', 'Темп роста']
+                        st.dataframe(forecast_display, use_container_width=True, hide_index=True)
+
+                    with col2:
+                        st.markdown("#### 💰 Итого прогноз")
+                        total_forecast_revenue = forecast_df['Forecast_Revenue'].sum()
+                        total_forecast_units = forecast_df['Forecast_Units'].sum()
+
+                        st.metric("Выручка", f"{format_number(total_forecast_revenue)} ₴")
+                        st.metric("Количество", f"{format_number(total_forecast_units)} шт")
+                        st.metric("Средний чек", f"{format_number(safe_divide(total_forecast_revenue, total_forecast_units))} ₴")
+
+                    # График прогноза
+                    combined_data = monthly_sales.copy()
+                    combined_data['Type'] = 'Факт'
+                    combined_data = combined_data.rename(columns={'Sum': 'Revenue'})
+
+                    forecast_chart = forecast_df.copy()
+                    forecast_chart['Type'] = 'Прогноз'
+                    forecast_chart = forecast_chart.rename(columns={'Forecast_Revenue': 'Revenue'})
+                    forecast_chart = forecast_chart[['Month', 'Revenue', 'Type']]
+
+                    combined_chart = pd.concat([combined_data[['Month', 'Revenue', 'Type']], forecast_chart])
+
+                    fig_forecast = px.line(
+                        combined_chart,
+                        x='Month',
+                        y='Revenue',
+                        color='Type',
+                        markers=True,
+                        title='Факт продаж и прогноз',
+                        labels={'Revenue': 'Выручка (₴)', 'Month': 'Месяц'},
+                        color_discrete_map={'Факт': '#4dabf7', 'Прогноз': '#ff6b6b'}
+                    )
+                    fig_forecast.update_layout(height=400)
+                    st.plotly_chart(fig_forecast, use_container_width=True)
+
+                else:
+                    st.error("❌ Недостаточно данных для генерации прогноза")
+
+        st.markdown("---")
+
+        # Генерация умного плана
+        st.markdown("### 🧠 Генерация умного плана")
+
+        st.info("Система автоматически создаст план продаж на основе исторических данных, текущих трендов и выбранного коэффициента корректировки")
+
+        if st.button("🎯 Создать умный план", type="primary", use_container_width=False):
+            with st.spinner("Генерация плана..."):
+                smart_plan_df = create_smart_plan(
+                    df_filtered,
+                    df_fact_detailed,
+                    forecast_periods,
+                    adjustment_factor
+                )
+
+                if smart_plan_df is not None and not smart_plan_df.empty:
+                    st.success(f"✅ План успешно создан для {len(smart_plan_df)} позиций")
+
+                    # Группировка по месяцам
+                    plan_by_month = smart_plan_df.groupby('Month').agg({
+                        'Revenue_Plan': 'sum',
+                        'Units_Plan': 'sum'
+                    }).reset_index()
+
+                    col1, col2 = st.columns([2, 1])
+
+                    with col1:
+                        st.markdown("#### 📅 План по месяцам")
+                        plan_display = plan_by_month.copy()
+                        plan_display['Revenue_Plan'] = plan_display['Revenue_Plan'].apply(
+                            lambda x: f"{format_number(x)} ₴")
+                        plan_display['Units_Plan'] = plan_display['Units_Plan'].apply(
+                            lambda x: f"{format_number(x)} шт")
+                        plan_display.columns = ['Месяц', 'План выручки', 'План штук']
+                        st.dataframe(plan_display, use_container_width=True, hide_index=True)
+
+                    with col2:
+                        st.markdown("#### 💼 Итого план")
+                        total_plan_revenue = plan_by_month['Revenue_Plan'].sum()
+                        total_plan_units = plan_by_month['Units_Plan'].sum()
+
+                        st.metric("План выручки", f"{format_number(total_plan_revenue)} ₴")
+                        st.metric("План штук", f"{format_number(total_plan_units)} шт")
+                        st.metric("Средний чек", f"{format_number(safe_divide(total_plan_revenue, total_plan_units))} ₴")
+
+                    # Детальный план
+                    st.markdown("---")
+                    st.markdown("#### 📋 Детальный план по магазинам и сегментам")
+
+                    # Опция фильтрации
+                    selected_plan_month = st.selectbox(
+                        "Выберите месяц для просмотра",
+                        options=sorted(smart_plan_df['Month'].unique())
+                    )
+
+                    plan_filtered = smart_plan_df[smart_plan_df['Month'] == selected_plan_month].copy()
+                    plan_filtered['Revenue_Plan'] = plan_filtered['Revenue_Plan'].apply(
+                        lambda x: f"{format_number(x)} ₴")
+                    plan_filtered['Units_Plan'] = plan_filtered['Units_Plan'].apply(
+                        lambda x: f"{format_number(x)} шт")
+                    plan_filtered['Growth_Rate'] = plan_filtered['Growth_Rate'].apply(
+                        lambda x: f"{x:.2f}%")
+
+                    st.dataframe(plan_filtered, use_container_width=True, hide_index=True, height=400)
+
+                    # Экспорт плана
+                    st.markdown("---")
+                    csv_plan = smart_plan_df.to_csv(index=False, encoding='utf-8-sig')
+                    st.download_button(
+                        label="📥 Скачать сгенерированный план (CSV)",
+                        data=csv_plan,
+                        file_name=f"smart_plan_{forecast_periods}months.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+
+                else:
+                    st.error("❌ Недостаточно данных для генерации плана")
+
+        st.markdown("---")
+
+        # Рекомендации
+        st.markdown("### 💡 Рекомендации для планирования")
+
+        recommendations_df = generate_plan_recommendations(
+            df_filtered,
+            df_fact_detailed,
+            financial_metrics,
+            abc_analysis
+        )
+
+        if recommendations_df is not None and not recommendations_df.empty:
+            st.success(f"Сгенерировано {len(recommendations_df)} рекомендаций")
+
+            # Фильтр по приоритету
+            priority_filter = st.multiselect(
+                "Фильтр по приоритету",
+                options=recommendations_df['priority'].unique(),
+                default=recommendations_df['priority'].unique()
+            )
+
+            recommendations_filtered = recommendations_df[recommendations_df['priority'].isin(priority_filter)]
+
+            # Цветовое кодирование по приоритету
+            def color_priority(row):
+                colors = {
+                    'Критический': 'background-color: #ffe0e0',
+                    'Высокий': 'background-color: #fff3bf',
+                    'Средний': 'background-color: #e3f2fd',
+                }
+                return [colors.get(row['priority'], '')] * len(row)
+
+            styled_recommendations = recommendations_filtered.style.apply(color_priority, axis=1)
+
+            st.dataframe(styled_recommendations, use_container_width=True, height=400)
+
+            # Экспорт рекомендаций
+            csv_recommendations = recommendations_filtered.to_csv(index=False, encoding='utf-8-sig')
+            st.download_button(
+                label="📥 Скачать рекомендации (CSV)",
+                data=csv_recommendations,
+                file_name=f"recommendations_{min(selected_months)}_{max(selected_months)}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
+        else:
+            st.info("📊 Все показатели в пределах нормы. Специальных рекомендаций нет.")
+
+        st.markdown("---")
+
+        # Методология
+        with st.expander("ℹ️ Методология расчетов"):
+            st.markdown("""
+            ### Как работает система планирования
+
+            **1. Анализ трендов:**
+            - Расчет среднего темпа роста на основе исторических данных
+            - Анализ сезонности и паттернов продаж
+            - Оценка волатильности показателей
+
+            **2. Прогнозирование:**
+            - Экстраполяция тренда на будущие периоды
+            - Учет коэффициента корректировки
+            - Расчет доверительных интервалов
+
+            **3. Генерация плана:**
+            - Распределение общего прогноза по магазинам и сегментам
+            - Учет исторической доли каждого магазина/сегмента
+            - Применение корректировочных коэффициентов
+
+            **4. Рекомендации:**
+            - Анализ отклонений от плана
+            - Выявление проблемных зон
+            - Генерация actionable рекомендаций
+
+            **Формулы:**
+            - Темп роста: `((Текущий период - Предыдущий период) / Предыдущий период) × 100%`
+            - Прогноз: `Последний факт × (1 + Темп роста)^период × Коэффициент корректировки`
+            - План магазина: `Общий прогноз × Доля магазина × Коэффициент корректировки`
+            """)
 
 
 if __name__ == "__main__":
