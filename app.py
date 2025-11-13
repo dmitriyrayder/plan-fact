@@ -2477,60 +2477,114 @@ def main():
                     # Сравнение сценариев
                     st.markdown("### 🎬 Сравнение сценариев")
 
-                    # Генерируем прогнозы для всех трех сценариев
-                    scenarios_comparison = []
+                    # Получаем базовый прогноз (без сценария)
+                    base_forecast = all_forecasts_df[all_forecasts_df['Model_Key'] == selected_model].copy()
 
-                    for scenario in ['optimistic', 'realistic', 'pessimistic']:
-                        scenario_data = apply_scenario(selected_forecast, scenario)
-                        scenarios_comparison.append(scenario_data)
+                    # Убедимся, что есть данные для прогноза
+                    if base_forecast.empty:
+                        st.warning("Нет данных для построения сценариев")
+                    else:
+                        # Генерируем прогнозы для всех трех сценариев явно (без цикла)
+                        # Это гарантирует, что каждый сценарий обрабатывается независимо
+                        scenario_optimistic = apply_scenario(base_forecast.copy(), 'optimistic')
+                        scenario_realistic = apply_scenario(base_forecast.copy(), 'realistic')
+                        scenario_pessimistic = apply_scenario(base_forecast.copy(), 'pessimistic')
 
-                    all_scenarios_df = pd.concat(scenarios_comparison)
+                        # Объединяем все сценарии
+                        all_scenarios_df = pd.concat([
+                            scenario_optimistic,
+                            scenario_realistic,
+                            scenario_pessimistic
+                        ], ignore_index=True)
 
-                    # График сравнения сценариев
-                    scenario_chart = all_scenarios_df.groupby(['Month', 'Scenario']).agg({
-                        'Forecast_Revenue': 'sum'
-                    }).reset_index()
+                        # Подготавливаем данные для графика
+                        # Выбираем только нужные колонки и группируем по месяцу и сценарию
+                        scenario_chart = all_scenarios_df[['Month', 'Scenario', 'Forecast_Revenue', 'Scenario_Factor']].copy()
 
-                    fig_scenarios = px.line(
-                        scenario_chart,
-                        x='Month',
-                        y='Forecast_Revenue',
-                        color='Scenario',
-                        markers=True,
-                        title='Сравнение сценариев прогноза',
-                        labels={'Forecast_Revenue': 'Выручка (₴)', 'Month': 'Месяц', 'Scenario': 'Сценарий'},
-                        color_discrete_map={
-                            'Оптимистичный': '#51cf66',
-                            'Реальный': '#4dabf7',
-                            'Пессимистичный': '#ff6b6b'
-                        }
-                    )
-                    fig_scenarios.update_layout(height=400)
-                    st.plotly_chart(fig_scenarios, use_container_width=True)
+                        # Группируем по месяцу и сценарию (на случай если есть дубликаты)
+                        scenario_chart = scenario_chart.groupby(['Month', 'Scenario', 'Scenario_Factor'], as_index=False).agg({
+                            'Forecast_Revenue': 'sum'
+                        })
 
-                    # Таблица сравнения сценариев
-                    st.markdown("#### 📊 Сводка по сценариям")
+                        # Сортируем по месяцу для правильного отображения линий
+                        scenario_chart = scenario_chart.sort_values(['Month', 'Scenario'])
 
-                    scenarios_summary = all_scenarios_df.groupby('Scenario').agg({
-                        'Forecast_Revenue': 'sum',
-                        'Forecast_Units': 'sum'
-                    }).reset_index()
+                        # Отладочная информация (скрыта по умолчанию)
+                        with st.expander("🔍 Проверка данных (отладка)"):
+                            st.write("**Базовый прогноз:**")
+                            st.write(f"Количество строк: {len(base_forecast)}")
+                            if len(base_forecast) > 0:
+                                st.write(f"Первый месяц: {base_forecast['Month'].iloc[0]}")
+                                st.write(f"Выручка первого месяца: {base_forecast['Forecast_Revenue'].iloc[0]:,.2f} ₴")
 
-                    scenarios_summary['Avg_Check'] = safe_divide(
-                        scenarios_summary['Forecast_Revenue'],
-                        scenarios_summary['Forecast_Units']
-                    )
+                            st.write("\n**После применения сценариев (все месяцы):**")
 
-                    scenarios_summary_display = scenarios_summary.copy()
-                    scenarios_summary_display['Forecast_Revenue'] = scenarios_summary_display['Forecast_Revenue'].apply(
-                        lambda x: f"{format_number(x)} ₴")
-                    scenarios_summary_display['Forecast_Units'] = scenarios_summary_display['Forecast_Units'].apply(
-                        lambda x: f"{format_number(x)} шт")
-                    scenarios_summary_display['Avg_Check'] = scenarios_summary_display['Avg_Check'].apply(
-                        lambda x: f"{format_number(x)} ₴")
+                            for scenario_name in ['Оптимистичный', 'Реальный', 'Пессимистичный']:
+                                scenario_rows = all_scenarios_df[all_scenarios_df['Scenario'] == scenario_name]
+                                if not scenario_rows.empty:
+                                    factor = scenario_rows['Scenario_Factor'].iloc[0]
+                                    total_revenue = scenario_rows['Forecast_Revenue'].sum()
+                                    st.write(f"\n{scenario_name} (фактор {factor}):")
+                                    st.write(f"  Общая выручка: {total_revenue:,.2f} ₴")
+                                    for idx, row in scenario_rows.iterrows():
+                                        st.write(f"  {row['Month']}: {row['Forecast_Revenue']:,.2f} ₴")
 
-                    scenarios_summary_display.columns = ['Сценарий', 'Прогноз выручки', 'Прогноз штук', 'Средний чек']
-                    st.dataframe(scenarios_summary_display, use_container_width=True, hide_index=True)
+                            st.write(f"\n**Количество точек данных в графике:** {len(scenario_chart)}")
+                            st.write(f"**Уникальные сценарии:** {scenario_chart['Scenario'].unique().tolist()}")
+
+                            st.write("\n**Данные для графика:**")
+                            st.dataframe(scenario_chart)
+
+                        # График сравнения сценариев
+                        fig_scenarios = px.line(
+                            scenario_chart,
+                            x='Month',
+                            y='Forecast_Revenue',
+                            color='Scenario',
+                            markers=True,
+                            title='Сравнение сценариев прогноза',
+                            labels={'Forecast_Revenue': 'Выручка (₴)', 'Month': 'Месяц', 'Scenario': 'Сценарий'},
+                            color_discrete_map={
+                                'Оптимистичный': '#51cf66',
+                                'Реальный': '#4dabf7',
+                                'Пессимистичный': '#ff6b6b'
+                            }
+                        )
+                        fig_scenarios.update_layout(height=400)
+                        st.plotly_chart(fig_scenarios, use_container_width=True)
+
+                        # Таблица сравнения сценариев
+                        st.markdown("#### 📊 Сводка по сценариям")
+
+                        scenarios_summary = all_scenarios_df.groupby('Scenario').agg({
+                            'Forecast_Revenue': 'sum',
+                            'Forecast_Units': 'sum',
+                            'Scenario_Factor': 'first'
+                        }).reset_index()
+
+                        scenarios_summary['Avg_Check'] = safe_divide(
+                            scenarios_summary['Forecast_Revenue'],
+                            scenarios_summary['Forecast_Units']
+                        )
+
+                        # Сортируем в нужном порядке
+                        scenario_order = {'Оптимистичный': 0, 'Реальный': 1, 'Пессимистичный': 2}
+                        scenarios_summary['Sort_Order'] = scenarios_summary['Scenario'].map(scenario_order)
+                        scenarios_summary = scenarios_summary.sort_values('Sort_Order').drop('Sort_Order', axis=1)
+
+                        scenarios_summary_display = scenarios_summary.copy()
+                        scenarios_summary_display['Коэффициент'] = scenarios_summary_display['Scenario_Factor'].apply(
+                            lambda x: f"×{x:.2f} ({(x-1)*100:+.0f}%)")
+                        scenarios_summary_display['Forecast_Revenue'] = scenarios_summary_display['Forecast_Revenue'].apply(
+                            lambda x: f"{format_number(x)} ₴")
+                        scenarios_summary_display['Forecast_Units'] = scenarios_summary_display['Forecast_Units'].apply(
+                            lambda x: f"{format_number(x)} шт")
+                        scenarios_summary_display['Avg_Check'] = scenarios_summary_display['Avg_Check'].apply(
+                            lambda x: f"{format_number(x)} ₴")
+
+                        scenarios_summary_display = scenarios_summary_display[['Scenario', 'Коэффициент', 'Forecast_Revenue', 'Forecast_Units', 'Avg_Check']]
+                        scenarios_summary_display.columns = ['Сценарий', 'Коэффициент', 'Прогноз выручки', 'Прогноз штук', 'Средний чек']
+                        st.dataframe(scenarios_summary_display, use_container_width=True, hide_index=True)
 
                     # График прогноза с историческими данными
                     st.markdown("---")
