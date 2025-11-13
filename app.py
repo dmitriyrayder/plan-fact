@@ -5,6 +5,9 @@ import plotly.graph_objects as go
 import numpy as np
 from datetime import datetime, timedelta
 from dateutil import parser
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 # ============================================================================
 # КОНФИГУРАЦИЯ
@@ -588,6 +591,324 @@ def calculate_growth_rate(df_merged, df_fact_detailed):
 
     avg_growth_rate = np.mean(growth_rates) if growth_rates else 0
     return avg_growth_rate, monthly_sales
+
+
+# Продвинутые модели прогнозирования
+
+def calculate_forecast_accuracy(y_true, y_pred):
+    """Расчет метрик точности прогноза"""
+    # Убираем нулевые значения для корректного расчета MAPE
+    mask = y_true != 0
+    y_true_filtered = y_true[mask]
+    y_pred_filtered = y_pred[mask]
+
+    if len(y_true_filtered) == 0:
+        return {'MAPE': 0, 'RMSE': 0, 'MAE': 0}
+
+    # MAPE (Mean Absolute Percentage Error)
+    mape = np.mean(np.abs((y_true_filtered - y_pred_filtered) / y_true_filtered)) * 100
+
+    # RMSE (Root Mean Squared Error)
+    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+
+    # MAE (Mean Absolute Error)
+    mae = mean_absolute_error(y_true, y_pred)
+
+    return {
+        'MAPE': round(mape, 2),
+        'RMSE': round(rmse, 2),
+        'MAE': round(mae, 2)
+    }
+
+
+def forecast_linear_regression(monthly_sales, periods=3):
+    """Прогнозирование с использованием линейной регрессии"""
+    if len(monthly_sales) < 2:
+        return None, None
+
+    # Подготовка данных
+    X = np.arange(len(monthly_sales)).reshape(-1, 1)
+    y_revenue = monthly_sales['Sum'].values
+    y_units = monthly_sales['Qty'].values
+
+    # Обучение модели
+    model_revenue = LinearRegression()
+    model_revenue.fit(X, y_revenue)
+
+    model_units = LinearRegression()
+    model_units.fit(X, y_units)
+
+    # Расчет точности на исторических данных
+    y_pred_revenue = model_revenue.predict(X)
+    accuracy = calculate_forecast_accuracy(y_revenue, y_pred_revenue)
+
+    # Прогноз на будущее
+    future_X = np.arange(len(monthly_sales), len(monthly_sales) + periods).reshape(-1, 1)
+    forecast_revenue = model_revenue.predict(future_X)
+    forecast_units = model_units.predict(future_X)
+
+    # Защита от отрицательных значений
+    forecast_revenue = np.maximum(forecast_revenue, 0)
+    forecast_units = np.maximum(forecast_units, 0)
+
+    return {
+        'revenue': forecast_revenue,
+        'units': forecast_units,
+        'model_name': 'Линейная регрессия'
+    }, accuracy
+
+
+def forecast_polynomial_regression(monthly_sales, periods=3, degree=2):
+    """Прогнозирование с использованием полиномиальной регрессии"""
+    if len(monthly_sales) < degree + 1:
+        return None, None
+
+    # Подготовка данных
+    X = np.arange(len(monthly_sales)).reshape(-1, 1)
+    y_revenue = monthly_sales['Sum'].values
+    y_units = monthly_sales['Qty'].values
+
+    # Полиномиальные признаки
+    poly_features = PolynomialFeatures(degree=degree)
+    X_poly = poly_features.fit_transform(X)
+
+    # Обучение модели
+    model_revenue = LinearRegression()
+    model_revenue.fit(X_poly, y_revenue)
+
+    model_units = LinearRegression()
+    model_units.fit(X_poly, y_units)
+
+    # Расчет точности
+    y_pred_revenue = model_revenue.predict(X_poly)
+    accuracy = calculate_forecast_accuracy(y_revenue, y_pred_revenue)
+
+    # Прогноз на будущее
+    future_X = np.arange(len(monthly_sales), len(monthly_sales) + periods).reshape(-1, 1)
+    future_X_poly = poly_features.transform(future_X)
+    forecast_revenue = model_revenue.predict(future_X_poly)
+    forecast_units = model_units.predict(future_X_poly)
+
+    # Защита от отрицательных значений
+    forecast_revenue = np.maximum(forecast_revenue, 0)
+    forecast_units = np.maximum(forecast_units, 0)
+
+    return {
+        'revenue': forecast_revenue,
+        'units': forecast_units,
+        'model_name': f'Полиномиальная регрессия (степень {degree})'
+    }, accuracy
+
+
+def forecast_exponential_smoothing(monthly_sales, periods=3, alpha=0.3):
+    """Прогнозирование с использованием экспоненциального сглаживания"""
+    if len(monthly_sales) < 2:
+        return None, None
+
+    revenue_data = monthly_sales['Sum'].values
+    units_data = monthly_sales['Qty'].values
+
+    # Простое экспоненциальное сглаживание
+    def exp_smoothing(data, alpha):
+        result = [data[0]]
+        for i in range(1, len(data)):
+            result.append(alpha * data[i] + (1 - alpha) * result[i-1])
+        return np.array(result)
+
+    smoothed_revenue = exp_smoothing(revenue_data, alpha)
+
+    # Расчет точности
+    accuracy = calculate_forecast_accuracy(revenue_data, smoothed_revenue)
+
+    # Прогноз - продолжаем тренд
+    last_value_revenue = smoothed_revenue[-1]
+    last_value_units = units_data[-1]
+
+    # Рассчитываем средний тренд
+    if len(smoothed_revenue) >= 2:
+        trend_revenue = (smoothed_revenue[-1] - smoothed_revenue[-2])
+        trend_units = (units_data[-1] - units_data[-2]) if len(units_data) >= 2 else 0
+    else:
+        trend_revenue = 0
+        trend_units = 0
+
+    forecast_revenue = []
+    forecast_units = []
+
+    for i in range(1, periods + 1):
+        forecast_revenue.append(max(0, last_value_revenue + trend_revenue * i))
+        forecast_units.append(max(0, last_value_units + trend_units * i))
+
+    return {
+        'revenue': np.array(forecast_revenue),
+        'units': np.array(forecast_units),
+        'model_name': f'Экспоненциальное сглаживание (α={alpha})'
+    }, accuracy
+
+
+def forecast_weighted_moving_average(monthly_sales, periods=3, window=3):
+    """Прогнозирование с использованием взвешенного скользящего среднего"""
+    if len(monthly_sales) < window:
+        return None, None
+
+    revenue_data = monthly_sales['Sum'].values
+    units_data = monthly_sales['Qty'].values
+
+    # Веса (больший вес для более свежих данных)
+    weights = np.arange(1, window + 1)
+    weights = weights / weights.sum()
+
+    # Расчет WMA для исторических данных
+    wma_revenue = []
+    for i in range(len(revenue_data)):
+        if i < window - 1:
+            wma_revenue.append(revenue_data[i])
+        else:
+            wma_revenue.append(np.sum(weights * revenue_data[i-window+1:i+1]))
+
+    wma_revenue = np.array(wma_revenue)
+
+    # Расчет точности
+    accuracy = calculate_forecast_accuracy(revenue_data, wma_revenue)
+
+    # Прогноз
+    forecast_revenue = []
+    forecast_units = []
+
+    last_values_revenue = revenue_data[-window:]
+    last_values_units = units_data[-window:]
+
+    for i in range(periods):
+        next_revenue = np.sum(weights * last_values_revenue)
+        next_units = np.sum(weights * last_values_units)
+
+        forecast_revenue.append(max(0, next_revenue))
+        forecast_units.append(max(0, next_units))
+
+        # Обновляем окно для следующей итерации
+        last_values_revenue = np.append(last_values_revenue[1:], next_revenue)
+        last_values_units = np.append(last_values_units[1:], next_units)
+
+    return {
+        'revenue': np.array(forecast_revenue),
+        'units': np.array(forecast_units),
+        'model_name': f'Взвешенное скользящее среднее (окно={window})'
+    }, accuracy
+
+
+def forecast_ensemble(monthly_sales, periods=3):
+    """Ансамблевое прогнозирование - среднее всех моделей"""
+    forecasts = []
+    accuracies = []
+
+    # Собираем прогнозы всех моделей
+    models = [
+        forecast_linear_regression(monthly_sales, periods),
+        forecast_polynomial_regression(monthly_sales, periods, degree=2),
+        forecast_exponential_smoothing(monthly_sales, periods, alpha=0.3),
+        forecast_weighted_moving_average(monthly_sales, periods, window=min(3, len(monthly_sales)))
+    ]
+
+    valid_forecasts_revenue = []
+    valid_forecasts_units = []
+
+    for model_result, accuracy in models:
+        if model_result is not None:
+            valid_forecasts_revenue.append(model_result['revenue'])
+            valid_forecasts_units.append(model_result['units'])
+            accuracies.append(accuracy)
+
+    if not valid_forecasts_revenue:
+        return None, None
+
+    # Среднее всех прогнозов
+    ensemble_revenue = np.mean(valid_forecasts_revenue, axis=0)
+    ensemble_units = np.mean(valid_forecasts_units, axis=0)
+
+    # Средняя точность
+    avg_accuracy = {
+        'MAPE': np.mean([acc['MAPE'] for acc in accuracies]),
+        'RMSE': np.mean([acc['RMSE'] for acc in accuracies]),
+        'MAE': np.mean([acc['MAE'] for acc in accuracies])
+    }
+
+    return {
+        'revenue': ensemble_revenue,
+        'units': ensemble_units,
+        'model_name': 'Ансамбль моделей'
+    }, avg_accuracy
+
+
+def forecast_with_multiple_models(df_merged, df_fact_detailed, periods=3):
+    """Прогнозирование с использованием нескольких моделей и выбором лучшей"""
+    avg_growth_rate, monthly_sales = calculate_growth_rate(df_merged, df_fact_detailed)
+
+    if monthly_sales.empty or len(monthly_sales) < 2:
+        return None
+
+    last_month_date = pd.Period(monthly_sales.iloc[-1]['Month'])
+
+    # Запускаем все модели
+    all_models = {
+        'linear': forecast_linear_regression(monthly_sales, periods),
+        'polynomial': forecast_polynomial_regression(monthly_sales, periods, degree=2),
+        'exponential': forecast_exponential_smoothing(monthly_sales, periods, alpha=0.3),
+        'wma': forecast_weighted_moving_average(monthly_sales, periods, window=min(3, len(monthly_sales))),
+        'ensemble': forecast_ensemble(monthly_sales, periods)
+    }
+
+    # Собираем результаты
+    results = []
+    for model_key, (model_result, accuracy) in all_models.items():
+        if model_result is not None and accuracy is not None:
+            model_forecasts = []
+            for i in range(periods):
+                forecast_month = (last_month_date + i + 1).strftime('%Y-%m')
+                model_forecasts.append({
+                    'Month': forecast_month,
+                    'Forecast_Revenue': model_result['revenue'][i],
+                    'Forecast_Units': int(model_result['units'][i]),
+                    'Model': model_result['model_name'],
+                    'Model_Key': model_key,
+                    'MAPE': accuracy['MAPE'],
+                    'RMSE': accuracy['RMSE'],
+                    'MAE': accuracy['MAE']
+                })
+            results.extend(model_forecasts)
+
+    if not results:
+        return None
+
+    return pd.DataFrame(results)
+
+
+def apply_scenario(forecast_df, scenario='realistic'):
+    """Применение сценария к прогнозу"""
+    if forecast_df is None or forecast_df.empty:
+        return None
+
+    # Коэффициенты для сценариев
+    scenario_factors = {
+        'optimistic': 1.20,      # +20%
+        'realistic': 1.00,       # без изменений
+        'pessimistic': 0.85      # -15%
+    }
+
+    scenario_names = {
+        'optimistic': 'Оптимистичный',
+        'realistic': 'Реальный',
+        'pessimistic': 'Пессимистичный'
+    }
+
+    factor = scenario_factors.get(scenario, 1.0)
+    df_scenario = forecast_df.copy()
+
+    df_scenario['Forecast_Revenue'] = df_scenario['Forecast_Revenue'] * factor
+    df_scenario['Forecast_Units'] = (df_scenario['Forecast_Units'] * factor).astype(int)
+    df_scenario['Scenario'] = scenario_names[scenario]
+    df_scenario['Scenario_Factor'] = factor
+
+    return df_scenario
 
 
 def forecast_next_period(df_merged, df_fact_detailed, periods=3):
@@ -1969,53 +2290,225 @@ def main():
 
         st.markdown("---")
 
-        # Прогноз
-        st.markdown("### 🔮 Прогноз продаж")
+        # Прогноз с моделями машинного обучения
+        st.markdown("### 🔮 Прогноз продаж с ML моделями")
+
+        st.info("Система использует 5 различных моделей машинного обучения для максимально точного прогнозирования")
+
+        # Выбор модели и сценария
+        col1, col2 = st.columns(2)
+
+        with col1:
+            selected_model = st.selectbox(
+                "📊 Выберите модель прогнозирования",
+                options=[
+                    'ensemble',
+                    'linear',
+                    'polynomial',
+                    'exponential',
+                    'wma'
+                ],
+                format_func=lambda x: {
+                    'ensemble': '🏆 Ансамбль моделей (рекомендуется)',
+                    'linear': '📈 Линейная регрессия',
+                    'polynomial': '📊 Полиномиальная регрессия',
+                    'exponential': '📉 Экспоненциальное сглаживание',
+                    'wma': '📐 Взвешенное скользящее среднее'
+                }[x],
+                help="Ансамбль моделей объединяет все модели для максимальной точности"
+            )
+
+        with col2:
+            selected_scenario = st.selectbox(
+                "🎬 Выберите сценарий планирования",
+                options=['optimistic', 'realistic', 'pessimistic'],
+                format_func=lambda x: {
+                    'optimistic': '🟢 Оптимистичный (+20%)',
+                    'realistic': '🟡 Реальный (базовый)',
+                    'pessimistic': '🔴 Пессимистичный (-15%)'
+                }[x],
+                index=1,  # По умолчанию реальный
+                help="Сценарий применяет коэффициент к базовому прогнозу"
+            )
 
         if st.button("🚀 Сгенерировать прогноз", type="primary", use_container_width=False):
-            with st.spinner("Генерация прогноза..."):
-                forecast_df = forecast_next_period(df_filtered, df_fact_detailed, forecast_periods)
+            with st.spinner("Анализ данных и генерация прогноза с использованием ML..."):
+                # Генерируем прогнозы для всех моделей
+                all_forecasts_df = forecast_with_multiple_models(df_filtered, df_fact_detailed, forecast_periods)
 
-                if forecast_df is not None and not forecast_df.empty:
-                    st.success("✅ Прогноз успешно сгенерирован")
+                if all_forecasts_df is not None and not all_forecasts_df.empty:
+                    st.success("✅ Прогноз успешно сгенерирован с использованием машинного обучения")
 
-                    # Отображение прогноза
+                    # Фильтруем по выбранной модели
+                    selected_forecast = all_forecasts_df[all_forecasts_df['Model_Key'] == selected_model].copy()
+
+                    # Применяем сценарий
+                    scenario_forecast = apply_scenario(selected_forecast, selected_scenario)
+
+                    # Показываем точность модели
+                    st.markdown("### 🎯 Точность выбранной модели")
+
+                    col1, col2, col3, col4 = st.columns(4)
+
+                    with col1:
+                        model_name = selected_forecast['Model'].iloc[0]
+                        st.info(f"**Модель:** {model_name}")
+
+                    with col2:
+                        mape = selected_forecast['MAPE'].iloc[0]
+                        mape_color = "🟢" if mape < 10 else "🟡" if mape < 20 else "🔴"
+                        st.metric(
+                            "MAPE",
+                            f"{mape:.2f}%",
+                            help="Mean Absolute Percentage Error - чем меньше, тем лучше. < 10% - отлично, < 20% - хорошо"
+                        )
+                        st.caption(f"{mape_color} Точность")
+
+                    with col3:
+                        rmse = selected_forecast['RMSE'].iloc[0]
+                        st.metric(
+                            "RMSE",
+                            f"{format_number(rmse)}",
+                            help="Root Mean Squared Error - среднеквадратичная ошибка"
+                        )
+
+                    with col4:
+                        mae = selected_forecast['MAE'].iloc[0]
+                        st.metric(
+                            "MAE",
+                            f"{format_number(mae)}",
+                            help="Mean Absolute Error - средняя абсолютная ошибка"
+                        )
+
+                    st.markdown("---")
+
+                    # Сравнение всех моделей
+                    with st.expander("📊 Сравнение всех моделей"):
+                        st.markdown("#### Точность моделей на исторических данных")
+
+                        # Группируем по модели и берем уникальные значения метрик
+                        model_comparison = all_forecasts_df.groupby('Model').agg({
+                            'MAPE': 'first',
+                            'RMSE': 'first',
+                            'MAE': 'first'
+                        }).reset_index()
+
+                        # Сортируем по MAPE (лучшие модели сверху)
+                        model_comparison = model_comparison.sort_values('MAPE')
+
+                        # Форматирование
+                        model_comparison_display = model_comparison.copy()
+                        model_comparison_display['MAPE'] = model_comparison_display['MAPE'].apply(lambda x: f"{x:.2f}%")
+                        model_comparison_display['RMSE'] = model_comparison_display['RMSE'].apply(lambda x: f"{format_number(x)}")
+                        model_comparison_display['MAE'] = model_comparison_display['MAE'].apply(lambda x: f"{format_number(x)}")
+
+                        model_comparison_display.columns = ['Модель', 'MAPE (%)', 'RMSE', 'MAE']
+
+                        st.dataframe(model_comparison_display, use_container_width=True, hide_index=True)
+
+                        st.caption("💡 Меньшие значения = более точная модель. MAPE < 10% считается отличным результатом.")
+
+                    st.markdown("---")
+
+                    # Отображение прогноза по сценарию
+                    st.markdown(f"### 📊 Прогноз: {scenario_forecast['Scenario'].iloc[0]}")
+
                     col1, col2 = st.columns([2, 1])
 
                     with col1:
-                        st.markdown("#### 📊 Прогнозные показатели")
+                        st.markdown("#### 📅 Прогнозные показатели")
 
-                        forecast_display = forecast_df.copy()
+                        forecast_display = scenario_forecast[['Month', 'Forecast_Revenue', 'Forecast_Units', 'Scenario']].copy()
                         forecast_display['Forecast_Revenue'] = forecast_display['Forecast_Revenue'].apply(
                             lambda x: f"{format_number(x)} ₴")
                         forecast_display['Forecast_Units'] = forecast_display['Forecast_Units'].apply(
                             lambda x: f"{format_number(x)} шт")
-                        forecast_display['Growth_Rate'] = forecast_display['Growth_Rate'].apply(
-                            lambda x: f"{x:.2f}%")
 
-                        forecast_display.columns = ['Месяц', 'Прогноз выручки', 'Прогноз штук', 'Темп роста']
+                        forecast_display.columns = ['Месяц', 'Прогноз выручки', 'Прогноз штук', 'Сценарий']
                         st.dataframe(forecast_display, use_container_width=True, hide_index=True)
 
                     with col2:
                         st.markdown("#### 💰 Итого прогноз")
-                        total_forecast_revenue = forecast_df['Forecast_Revenue'].sum()
-                        total_forecast_units = forecast_df['Forecast_Units'].sum()
+                        total_forecast_revenue = scenario_forecast['Forecast_Revenue'].sum()
+                        total_forecast_units = scenario_forecast['Forecast_Units'].sum()
 
                         st.metric("Выручка", f"{format_number(total_forecast_revenue)} ₴")
                         st.metric("Количество", f"{format_number(total_forecast_units)} шт")
                         st.metric("Средний чек", f"{format_number(safe_divide(total_forecast_revenue, total_forecast_units))} ₴")
 
-                    # График прогноза
+                    st.markdown("---")
+
+                    # Сравнение сценариев
+                    st.markdown("### 🎬 Сравнение сценариев")
+
+                    # Генерируем прогнозы для всех трех сценариев
+                    scenarios_comparison = []
+
+                    for scenario in ['optimistic', 'realistic', 'pessimistic']:
+                        scenario_data = apply_scenario(selected_forecast, scenario)
+                        scenarios_comparison.append(scenario_data)
+
+                    all_scenarios_df = pd.concat(scenarios_comparison)
+
+                    # График сравнения сценариев
+                    scenario_chart = all_scenarios_df.groupby(['Month', 'Scenario']).agg({
+                        'Forecast_Revenue': 'sum'
+                    }).reset_index()
+
+                    fig_scenarios = px.line(
+                        scenario_chart,
+                        x='Month',
+                        y='Forecast_Revenue',
+                        color='Scenario',
+                        markers=True,
+                        title='Сравнение сценариев прогноза',
+                        labels={'Forecast_Revenue': 'Выручка (₴)', 'Month': 'Месяц', 'Scenario': 'Сценарий'},
+                        color_discrete_map={
+                            'Оптимистичный': '#51cf66',
+                            'Реальный': '#4dabf7',
+                            'Пессимистичный': '#ff6b6b'
+                        }
+                    )
+                    fig_scenarios.update_layout(height=400)
+                    st.plotly_chart(fig_scenarios, use_container_width=True)
+
+                    # Таблица сравнения сценариев
+                    st.markdown("#### 📊 Сводка по сценариям")
+
+                    scenarios_summary = all_scenarios_df.groupby('Scenario').agg({
+                        'Forecast_Revenue': 'sum',
+                        'Forecast_Units': 'sum'
+                    }).reset_index()
+
+                    scenarios_summary['Avg_Check'] = safe_divide(
+                        scenarios_summary['Forecast_Revenue'],
+                        scenarios_summary['Forecast_Units']
+                    )
+
+                    scenarios_summary_display = scenarios_summary.copy()
+                    scenarios_summary_display['Forecast_Revenue'] = scenarios_summary_display['Forecast_Revenue'].apply(
+                        lambda x: f"{format_number(x)} ₴")
+                    scenarios_summary_display['Forecast_Units'] = scenarios_summary_display['Forecast_Units'].apply(
+                        lambda x: f"{format_number(x)} шт")
+                    scenarios_summary_display['Avg_Check'] = scenarios_summary_display['Avg_Check'].apply(
+                        lambda x: f"{format_number(x)} ₴")
+
+                    scenarios_summary_display.columns = ['Сценарий', 'Прогноз выручки', 'Прогноз штук', 'Средний чек']
+                    st.dataframe(scenarios_summary_display, use_container_width=True, hide_index=True)
+
+                    # График прогноза с историческими данными
+                    st.markdown("---")
+                    st.markdown("### 📈 Прогноз на основе исторических данных")
+
                     combined_data = monthly_sales.copy()
                     combined_data['Type'] = 'Факт'
                     combined_data = combined_data.rename(columns={'Sum': 'Revenue'})
+                    combined_data = combined_data[['Month', 'Revenue', 'Type']]
 
-                    forecast_chart = forecast_df.copy()
-                    forecast_chart['Type'] = 'Прогноз'
-                    forecast_chart = forecast_chart.rename(columns={'Forecast_Revenue': 'Revenue'})
-                    forecast_chart = forecast_chart[['Month', 'Revenue', 'Type']]
+                    forecast_chart = scenario_forecast[['Month', 'Forecast_Revenue', 'Scenario']].copy()
+                    forecast_chart = forecast_chart.rename(columns={'Forecast_Revenue': 'Revenue', 'Scenario': 'Type'})
 
-                    combined_chart = pd.concat([combined_data[['Month', 'Revenue', 'Type']], forecast_chart])
+                    combined_chart = pd.concat([combined_data, forecast_chart[['Month', 'Revenue', 'Type']]])
 
                     fig_forecast = px.line(
                         combined_chart,
@@ -2023,12 +2516,28 @@ def main():
                         y='Revenue',
                         color='Type',
                         markers=True,
-                        title='Факт продаж и прогноз',
-                        labels={'Revenue': 'Выручка (₴)', 'Month': 'Месяц'},
-                        color_discrete_map={'Факт': '#4dabf7', 'Прогноз': '#ff6b6b'}
+                        title=f'Исторические данные и прогноз ({scenario_forecast["Scenario"].iloc[0]})',
+                        labels={'Revenue': 'Выручка (₴)', 'Month': 'Месяц', 'Type': 'Тип'},
+                        color_discrete_map={
+                            'Факт': '#4dabf7',
+                            'Оптимистичный': '#51cf66',
+                            'Реальный': '#ffd43b',
+                            'Пессимистичный': '#ff6b6b'
+                        }
                     )
                     fig_forecast.update_layout(height=400)
                     st.plotly_chart(fig_forecast, use_container_width=True)
+
+                    # Экспорт прогноза
+                    st.markdown("---")
+                    csv_forecast = scenario_forecast.to_csv(index=False, encoding='utf-8-sig')
+                    st.download_button(
+                        label="📥 Скачать прогноз (CSV)",
+                        data=csv_forecast,
+                        file_name=f"forecast_{selected_model}_{selected_scenario}_{forecast_periods}months.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
 
                 else:
                     st.error("❌ Недостаточно данных для генерации прогноза")
