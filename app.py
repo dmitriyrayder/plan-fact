@@ -835,9 +835,12 @@ def forecast_ensemble(monthly_sales, periods=3):
 
     # Средняя точность
     avg_accuracy = {
-        'MAPE': np.mean([acc['MAPE'] for acc in accuracies]),
-        'RMSE': np.mean([acc['RMSE'] for acc in accuracies]),
-        'MAE': np.mean([acc['MAE'] for acc in accuracies])
+        'MAPE': round(np.mean([acc['MAPE'] for acc in accuracies]), 2),
+        'RMSE': round(np.mean([acc['RMSE'] for acc in accuracies]), 2),
+        'MAE': round(np.mean([acc['MAE'] for acc in accuracies]), 2),
+        'RMSE_Pct': round(np.mean([acc['RMSE_Pct'] for acc in accuracies]), 2),
+        'MAE_Pct': round(np.mean([acc['MAE_Pct'] for acc in accuracies]), 2),
+        'Mean_Value': round(np.mean([acc['Mean_Value'] for acc in accuracies]), 2)
     }
 
     return {
