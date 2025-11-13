@@ -1075,6 +1075,143 @@ def create_smart_plan(df_merged, df_fact_detailed, forecast_periods=3, adjustmen
 
 
 def main():
+    # Применяем стилизацию для всего приложения
+    st.markdown("""
+        <style>
+        /* Основные контейнеры */
+        .block-container {
+            padding-top: 2rem;
+            padding-bottom: 2rem;
+        }
+
+        /* Стилизация для dataframe таблиц */
+        .stDataFrame {
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 10px;
+            background-color: #fafafa;
+            margin: 10px 0;
+        }
+
+        /* Стилизация для метрик */
+        div[data-testid="stMetricValue"] {
+            font-size: 1.8rem;
+            font-weight: 600;
+        }
+
+        div[data-testid="metric-container"] {
+            border: 2px solid #e3f2fd;
+            border-radius: 8px;
+            padding: 15px;
+            background-color: #f5f5f5;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+
+        /* Стилизация для графиков */
+        .stPlotlyChart {
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 10px;
+            background-color: white;
+            margin: 15px 0;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+        }
+
+        /* Разделители секций */
+        hr {
+            margin: 2rem 0;
+            border: none;
+            border-top: 2px solid #e0e0e0;
+        }
+
+        /* Стилизация заголовков */
+        h1, h2, h3, h4 {
+            padding: 10px 0;
+            margin-top: 20px;
+        }
+
+        h3 {
+            border-left: 4px solid #1976d2;
+            padding-left: 15px;
+            margin-bottom: 20px;
+        }
+
+        /* Стилизация expander (раскрывающихся блоков) */
+        .streamlit-expanderHeader {
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            background-color: #f8f9fa;
+            font-weight: 500;
+        }
+
+        .streamlit-expanderContent {
+            border: 1px solid #e0e0e0;
+            border-top: none;
+            border-radius: 0 0 6px 6px;
+            padding: 15px;
+            background-color: #ffffff;
+        }
+
+        /* Стилизация для info, warning, success блоков */
+        .stAlert {
+            border-radius: 8px;
+            padding: 15px;
+            margin: 10px 0;
+            border-left: 4px solid;
+        }
+
+        /* Стилизация для вкладок */
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 8px;
+            background-color: #f5f5f5;
+            padding: 8px;
+            border-radius: 8px;
+        }
+
+        .stTabs [data-baseweb="tab"] {
+            border-radius: 6px;
+            padding: 10px 20px;
+            background-color: white;
+            border: 1px solid #e0e0e0;
+        }
+
+        .stTabs [aria-selected="true"] {
+            background-color: #1976d2 !important;
+            color: white !important;
+            border-color: #1976d2 !important;
+        }
+
+        /* Стилизация кнопок */
+        .stButton > button {
+            border-radius: 6px;
+            padding: 10px 24px;
+            font-weight: 500;
+            border: 2px solid #1976d2;
+            transition: all 0.3s;
+        }
+
+        .stButton > button:hover {
+            background-color: #1976d2;
+            color: white;
+            box-shadow: 0 4px 8px rgba(25, 118, 210, 0.3);
+        }
+
+        /* Стилизация sidebar */
+        section[data-testid="stSidebar"] {
+            border-right: 2px solid #e0e0e0;
+        }
+
+        /* Контейнеры с отступами */
+        div.row-widget.stRadio,
+        div.row-widget.stSelectbox,
+        div.row-widget.stMultiSelect {
+            padding: 10px;
+            background-color: #fafafa;
+            border-radius: 6px;
+            margin: 5px 0;
+        }
+        </style>
+    """, unsafe_allow_html=True)
 
     # Заголовок
     st.title("👓 План/Факт Продаж Оптика")
@@ -2534,24 +2671,6 @@ def main():
 
                             st.write("\n**Данные для графика:**")
                             st.dataframe(scenario_chart)
-
-                        # График сравнения сценариев
-                        fig_scenarios = px.line(
-                            scenario_chart,
-                            x='Month',
-                            y='Forecast_Revenue',
-                            color='Scenario',
-                            markers=True,
-                            title='Сравнение сценариев прогноза',
-                            labels={'Forecast_Revenue': 'Выручка (₴)', 'Month': 'Месяц', 'Scenario': 'Сценарий'},
-                            color_discrete_map={
-                                'Оптимистичный': '#51cf66',
-                                'Реальный': '#4dabf7',
-                                'Пессимистичный': '#ff6b6b'
-                            }
-                        )
-                        fig_scenarios.update_layout(height=400)
-                        st.plotly_chart(fig_scenarios, use_container_width=True)
 
                         # Таблица сравнения сценариев
                         st.markdown("#### 📊 Сводка по сценариям")
